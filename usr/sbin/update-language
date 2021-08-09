@@ -1,0 +1,361 @@
+#!/usr/bin/perl
+# update-language --- Generate language.dat* from a set of files
+# Copyright (C) 2015 Norbert Preining
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; version 2 dated June, 1991.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; see the file COPYING. If not, write to the
+# Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+# Boston, MA  02110-1301 USA.
+
+
+$^W = 1;
+use strict;
+
+my $version = "0.1";
+
+use File::Basename;
+use Getopt::Long;
+use Text::ParseWords;
+
+my $mode = 'all';
+
+# for each file in /var/lib/tex-common/hyphen-cnf/
+# plus the config file /etc/texmf/web2c/local-hyphen.cnf
+
+my $localconf = '/etc/texmf/web2c/local-hyphen.cnf';
+my $default_output_dir = '/var/lib/texmf/tex/generic/config';
+my %data;
+my $progname = basename($0);
+
+my $opt_conf_file = "";
+my $opt_output    = "";
+my $opt_outdir    = "";
+my $opt_checks = 0;
+my $opt_quiet  = 0;
+my $opt_help   = 0;
+my $opt_version = 0;
+
+my %defaults = (
+  'latex' => {
+    'output' => 'language.dat',
+    'func'   => \&make_latex_line,
+    'head'   => '/usr/share/texlive/texmf-dist/tex/generic/config/language.us',
+    'post'   => '',
+  },
+  'etex' => {
+    'output' => 'language.def',
+    'func'   => \&make_etex_line,
+    'head'   => '/usr/share/texlive/texmf-dist/tex/generic/config/language.us.def',
+    'post'   => "\n\\uselanguage \{USenglish\}  \%\%\% This MUST be the last line of the file.\n",
+  },
+  'luatex' => {
+    'output' => 'language.dat.lua',
+    'func'   => \&make_luatex_line,
+    'head'   => '/usr/share/texlive/texmf-dist/tex/generic/config/language.us.lua',
+    'post'   => "\}\n",
+  }
+);
+
+&main();
+
+# from here on only sub definitions!
+
+sub main {
+  GetOptions(
+    "conf-file|c=s"     => \$opt_conf_file,
+    "output-file|o=s"   => \$opt_output,
+    "output-dir|d=s"    => \$opt_outdir,
+    "checks"            => \$opt_checks,
+    "quiet|q"           => \$opt_quiet,
+    "help|h|?"          => \$opt_help,
+    "version|v"         => \$opt_version) or usage();
+
+  if ($progname eq "update-language") {
+    $mode = "all";
+  } elsif ($progname eq "update-language-dat") {
+    $mode = "latex";
+  } elsif ($progname eq "update-language-def") {
+    $mode = "etex";
+  } elsif ($progname eq "update-language-lua") {
+    $mode = "luatex";
+  } else {
+    die "Please call me as update-language(-dat,-def,-lua).";
+  }
+
+  if ($opt_help) {
+    usage();
+    exit 0;
+  }
+  if ($opt_version) {
+    version();
+    exit 0;
+  }
+
+  # if texlive-base is not properly installed, we do nothing
+  my $stat = `dpkg-query -W -f=\'\${Status}\' texlive-base:all 2>/dev/null`;
+  if ($stat ne "install ok installed") {
+    printf "$progname: texlive-base not installed and configured, doing nothing!\n";
+    exit 0;
+  }
+
+
+  update_conffiles($mode);
+}
+
+
+sub update_conffiles {
+  my $mode = shift;
+  my @todo;
+
+  if ($mode eq 'all') {
+    push @todo, keys(%defaults);
+  } else {
+    push @todo, $mode;
+  }
+
+  read_data();
+
+  for my $t (@todo) {
+    my $of = ($opt_output ? $opt_output : 
+      ( $opt_outdir ? "$opt_outdir/$defaults{$t}{'output'}" :
+        "$default_output_dir/$defaults{$t}{'output'}"));
+    open(FOO, ">$of") || die "Cannot open $of: $!";
+
+    if (-r $defaults{$t}{'head'}) {
+      open BAR, "<", $defaults{$t}{'head'} || die("Cannot open head file $defaults{$t}{'head'}: $!");
+
+      for (<BAR>) { print FOO $_; }
+      close BAR;
+    } else {
+      die("Missing head file $defaults{$t}{'head'}: $!");
+    }
+    for my $n (keys %data) {
+      print FOO &{$defaults{$t}{'func'}}($n);
+    }
+    print FOO $defaults{$t}{'post'};
+    close FOO;
+  }
+}
+
+# should have been in TLUtils, but the actual code is hidden
+# in TLPOBJ.pm, bad!
+sub make_latex_line {
+  my $n = shift;
+  my $ret = "$n " . $data{$n}{'file'} . "\n";
+  if ($data{$n}{'synonyms'}) {
+    for my $s (@{$data{$n}{'synonyms'}}) {
+      $ret .= "=$s\n";
+    }
+  }
+  return $ret;
+}
+sub make_etex_line {
+  my $n = shift;
+  my $file = $data{$n}{'file'};
+  my $lhm  = $data{$n}{'lefthyphenmin'};
+  my $rhm  = $data{$n}{'righthyphenmin'};
+  my $ret = "\\addlanguage\{$n\}\{$file\}\{\}\{$lhm\}\{$rhm\}\n";
+  return $ret;
+}
+sub make_luatex_line {
+  my $n = shift;
+  my $file = $data{$n}{'file'};
+  my $exc  = $data{$n}{'file_exceptions'};
+  my $lhm  = $data{$n}{'lefthyphenmin'};
+  my $rhm  = $data{$n}{'righthyphenmin'};
+  my $patt = $data{$n}{'file_patterns'};
+  my $special = $data{$n}{'luaspecial'};
+  my $syns = '';
+  if ($data{$n}{'synonyms'}) {
+    my @syn = (@{$data{$n}{'synonyms'}});
+    map { $_ = "'$_'" } @syn;
+    $syns = join(', ', @syn);
+  }
+  my $ret = <<"EOF"
+  [\'$n\'] = {
+    loader = \'$file\',
+    lefthyphenmin = $lhm,
+    righthyphenmin = $rhm,
+    synonyms = { $syns },
+EOF
+  ;
+  $ret .= "    patterns = \'$patt\',\n" if defined $patt;
+  $ret .= "    hyphenation = \'$exc\',\n" if defined $exc;
+  $ret .= "    special = \'$special\',\n" if defined $special;
+  $ret .= "  },\n";
+  return $ret;
+}
+
+sub parse_hyphen_line {
+  my $line = shift;
+  my %ret;
+  my $default_lefthyphenmin = 2;
+  my $default_righthyphenmin = 3;
+  $ret{"lefthyphenmin"} = $default_lefthyphenmin;
+  $ret{"righthyphenmin"} = $default_righthyphenmin;
+  $ret{"synonyms"} = [];
+  my @parsed = Text::ParseWords::parse_line('\s+', 0, $line);
+  for my $p (@parsed) {
+    my ($a, $b) = split(/=/, $p);
+    if ($a eq "name") {
+      if (!$b) {
+        $ret{"error"} = "AddHyphen line needs name=something";
+        return %ret;
+      }
+      $ret{"name"} = $b;
+      next;
+    }
+    if ($a eq "lefthyphenmin") {
+      $ret{"lefthyphenmin"} = ( $b ? $b : $default_lefthyphenmin );
+      next;
+    }
+    if ($a eq "righthyphenmin") {
+      $ret{"righthyphenmin"} = ( $b ? $b : $default_righthyphenmin );
+      next;
+    }
+    if ($a eq "file") {
+      if (!$b) {
+        $ret{"error"} = "AddHyphen line needs file=something";
+        return %ret;
+      }
+      $ret{"file"} = $b;
+      next;
+    }
+    if ($a eq "file_patterns") {
+        $ret{"file_patterns"} = $b;
+        next;
+    }
+    if ($a eq "file_exceptions") {
+        $ret{"file_exceptions"} = $b;
+        next;
+    }
+    if ($a eq "luaspecial") {
+        $ret{"luaspecial"} = $b;
+        next;
+    }
+    if ($a eq "databases") {
+      @{$ret{"databases"}} = split /,/, $b;
+      next;
+    }
+    if ($a eq "synonyms") {
+      @{$ret{"synonyms"}} = split /,/, $b;
+      next;
+    }
+    if ($a eq "comment") {
+        $ret{"comment"} = $b;
+        next;
+    }
+    # should not be reached at all
+    $ret{"error"} = "Unknown language directive $a";
+    return %ret;
+  }
+  # this default value couldn't be set earlier
+  if (not defined($ret{"databases"})) {
+    if (defined $ret{"file_patterns"} or defined $ret{"file_exceptions"}
+        or defined $ret{"luaspecial"}) {
+      @{$ret{"databases"}} = qw(dat def lua);
+    } else {
+      @{$ret{"databases"}} = qw(dat def);
+    }
+  }
+  return %ret;
+}
+
+
+sub read_one_file {
+  my $f = shift;
+  my $do_warn = shift;
+  open FOO, "<$f" || die ("Cannot read file $f: $!");
+  while (<FOO>) {
+    chomp;
+    next if /^\s*%/;
+    next if /^\s*$/;
+    my %r = parse_hyphen_line($_);
+    if (defined($r{"error"})) {
+      die ("Cannot parse $_ in $f: $r{'error'}");
+    }
+    my $n = $r{'name'};
+    if (defined($data{$n})) {
+      if ($do_warn == 2) {
+        printf STDERR "TeX Live internal double defined hyphenations pattern found: $n\n";
+      } elsif ($do_warn == 1) {
+        printf STDERR "double defined hyphenations pattern found: $n\n";
+      } 
+    }
+    for my $k (keys %r) {
+      next if ($k eq "name");
+      $data{$n}{$k} = $r{$k};
+    }
+  }
+  close FOO;
+}
+
+sub read_data {
+  if (-d '/var/lib/tex-common/hyphen-cnf/texlive/') {
+    for my $f (</var/lib/tex-common/hyphen-cnf/texlive/*.cnf>) {
+      read_one_file($f, 2);
+    }
+  }
+  if (-d '/var/lib/tex-common/hyphen-cnf/texmf/') {
+    for my $f (</var/lib/tex-common/hyphen-cnf/texmf/*.cnf>) {
+      read_one_file($f, 1);
+    }
+  }
+  if (-r $localconf) {
+    read_one_file($localconf, 0);
+  }
+}
+
+sub version {
+  print "$progname $version\n";
+}
+
+sub usage () {
+  print <<"EOF"
+Usage: $progname(-dat,-def,-lua) [OPTIONS ...]
+Generate hyphenation configuration files language.dat, .def, .dat.lua
+
+When called as update-language, all three configurations files are
+generated. Otherwise only the selected one.
+
+Options:
+  -c, --conf-file=FILE   file giving additional hyphen specifications
+  -o, --output-file=FILE file to write the output to
+  -d, --output-dir=DIR   directory where files are written
+      --checks           perform sanity checks on the generated config file
+  -q, --quiet            don't write anything to the standard output during
+                         normal operation
+  -h, -?, --help         display this help message and exit
+      --version          output version information and exit
+
+Files:
+
+The default output directory is
+  $default_output_dir
+
+The default output files are
+  for update-language-dat  $defaults{'latex'}{'output'}
+  for update-language-def  $defaults{'etex'}{'output'}
+  for update-language-lua  $defaults{'luatex'}{'output'}
+
+If -o/--output-file is given, it overrides all defaults.
+
+EOF
+;
+}
+
+### Local Variables:
+### perl-indent-level: 2
+### tab-width: 2
+### indent-tabs-mode: nil
+### End:
+# vim:set tabstop=2 expandtab: #

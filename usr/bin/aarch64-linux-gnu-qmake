@@ -1,0 +1,23 @@
+#!/bin/sh
+
+QMAKE_MODE=
+
+if [ "x$1" = x-query ]; then
+	exec /usr/lib/qt5/bin/qmake "$@" -qtconf /usr/lib/aarch64-linux-gnu/qt5/qt.conf
+elif [ "x$1" = x-makefile ] || [ "x$1" = x-project ]; then
+	QMAKE_MODE="$1"
+	shift
+fi
+
+exec /usr/lib/qt5/bin/qmake \
+	$QMAKE_MODE \
+	-qtconf /usr/lib/aarch64-linux-gnu/qt5/qt.conf \
+	-early \
+	QMAKE_CC=${CC:-aarch64-linux-gnu-gcc} \
+	QMAKE_CXX=${CXX:-aarch64-linux-gnu-g++} \
+	QMAKE_LINK=${CXX:-aarch64-linux-gnu-g++} \
+	QMAKE_STRIP=${STRIP:-aarch64-linux-gnu-strip} \
+	QMAKE_QMAKE=/usr/bin/aarch64-linux-gnu-qmake \
+	PKG_CONFIG=aarch64-linux-gnu-pkg-config \
+	-before \
+	"$@"

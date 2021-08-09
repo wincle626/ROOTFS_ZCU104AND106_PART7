@@ -1,0 +1,1 @@
+../lib/llvm-10/share/clang/clang-tidy-diff.py
